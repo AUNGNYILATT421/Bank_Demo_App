@@ -81,13 +81,17 @@ def classify_scam_pattern(recipient_id: str, features: dict) -> tuple:
     a bare risk number — so the tag shown to the user is grounded in real
     fraud categories rather than decoration.
     """
-    if "investment" in recipient_id:
+    # Require an actual prior report before trusting the substring match on the
+    # ID — otherwise a coincidentally-named but unflagged "new recipient" typed
+    # in live (e.g. containing "investment") would get mislabeled.
+    is_flagged = features["recipient_flagged_count"] > 0
+    if is_flagged and "investment" in recipient_id:
         return ("Investment scam pattern", "Matches accounts reported for 'guaranteed returns' investment scams.")
-    if "jobscam" in recipient_id:
+    if is_flagged and "jobscam" in recipient_id:
         return ("Job-offer scam pattern", "Matches accounts reported in fake job-offer / advance-fee scams.")
-    if "qrclone" in recipient_id:
+    if is_flagged and "qrclone" in recipient_id:
         return ("QR-clone / bank-impersonation pattern", "Matches accounts linked to cloned QR codes or fake bank-support requests.")
-    if features["recipient_flagged_count"] > 0:
+    if is_flagged:
         return ("Reported-account pattern", "This account has prior reports from other K PLUS users.")
     if features["is_first_time_recipient"] and features["amount_ratio"] >= 3 and features["is_night"]:
         return ("Urgent late-night request pattern", "Large, late-night transfers to new accounts are common in romance and urgent-favor scams.")
@@ -96,6 +100,65 @@ def classify_scam_pattern(recipient_id: str, features: dict) -> tuple:
     if features["is_first_time_recipient"] and features["is_night"]:
         return ("Late-night new-recipient pattern", "First-time transfers late at night are a common early sign in romance and urgent-favor scams, even at modest amounts.")
     return ("General unusual-activity pattern", "This transfer doesn't match your usual behavior, but no specific scam type is confirmed.")
+
+
+# --- Transparent, human-readable risk scorecard -----------------------------
+# A second, independent explanation of risk, alongside the ML model rather
+# than instead of it: point weights per factor, graded like a credit score.
+# The weights aren't invented — they're the trained GradientBoostingClassifier's
+# own feature_importances_, rounded to a 100-point scale so anyone, not just
+# a data scientist, can check the arithmetic by hand:
+#   amount_ratio             0.74  -> 74 points
+#   recipient_flagged_count  0.16  -> 16 points
+#   is_first_time_recipient  0.05  ->  5 points
+#   hour / is_night          0.04  ->  4 points (folded into one "late-night" factor
+#                                     — is_night alone carried ~0% importance on its
+#                                     own, since it's a coarse cut of `hour`)
+#   velocity_24h             0.01  ->  1 point
+RISK_GRADE_BANDS = [
+    (15, "A+", "Very Safe"),
+    (35, "B+", "Mostly Safe"),
+    (55, "C+", "Some Caution"),
+    (75, "D", "Risky"),
+    (101, "F", "High Risk"),
+]
+
+
+def _amount_ratio_points(ratio: float) -> int:
+    if ratio < 1.5:
+        return 0
+    if ratio < 2:
+        return 15
+    if ratio < 3:
+        return 35
+    if ratio < 5:
+        return 55
+    return 74
+
+
+def _flagged_points(count: int) -> int:
+    if count >= 5:
+        return 16
+    if count >= 3:
+        return 12
+    if count >= 1:
+        return 8
+    return 0
+
+
+def compute_risk_scorecard(features: dict) -> dict:
+    breakdown = [
+        ("Unusual transfer amount", _amount_ratio_points(features["amount_ratio"]), 74),
+        ("Reported by other users", _flagged_points(features["recipient_flagged_count"]), 16),
+        ("First-time recipient", 5 if features["is_first_time_recipient"] else 0, 5),
+        ("Late-night timing", 4 if features["is_night"] else 0, 4),
+        ("Several recent transfers", 1 if features["velocity_24h"] >= 3 else 0, 1),
+    ]
+    score = sum(points for _, points, _ in breakdown)
+    grade, grade_label = next(
+        (g, label) for cutoff, g, label in RISK_GRADE_BANDS if score < cutoff
+    )
+    return {"score": score, "grade": grade, "grade_label": grade_label, "breakdown": breakdown}
 
 
 def predict_risk(features: dict):

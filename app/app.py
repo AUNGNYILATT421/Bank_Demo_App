@@ -7,7 +7,13 @@ confirmation, instead of only after-the-fact fraud reporting.
 import streamlit as st
 
 from llm_explainer import generate_warning
-from model import build_features, classify_scam_pattern, is_cold_start, predict_risk
+from model import (
+    build_features,
+    classify_scam_pattern,
+    compute_risk_scorecard,
+    is_cold_start,
+    predict_risk,
+)
 from train_model import PERSONAS
 
 st.set_page_config(page_title="Pause & Protect", page_icon="🛡️", layout="centered")
@@ -15,63 +21,106 @@ st.set_page_config(page_title="Pause & Protect", page_icon="🛡️", layout="ce
 st.markdown(
     """
     <style>
-    .block-container {max-width: 460px; padding-top: 2rem;}
+    /* Referencing K PLUS's own dark home-screen: dark slate app body, white
+       "island" cards for key info (balance, intro), teal accent bars on
+       section headers, circular avatar + wordmark topbar, bottom nav. */
+    .block-container {max-width: 460px; padding-top: 1.5rem;}
     .phone-card {
-        background: white; border-radius: 20px; padding: 1.5rem;
-        box-shadow: 0 4px 20px rgba(0,0,0,0.08); border: 1px solid #e5e7eb;
-    }
-    .kplus-header {
-        background: #0C8B44; color: white; border-radius: 16px 16px 0 0;
-        padding: 1rem 1.5rem; margin: -1.5rem -1.5rem 1.25rem -1.5rem; font-weight: 600;
-    }
-    .warning-card {
-        background: #FFF7ED; border: 1px solid #FDBA74; border-radius: 14px;
-        padding: 1rem 1.25rem; margin: 1rem 0;
-    }
-    .success-card {
-        background: #ECFDF5; border: 1px solid #6EE7B7; border-radius: 14px;
-        padding: 1rem 1.25rem; margin: 1rem 0;
-    }
-    .cancel-card {
-        background: #F3F4F6; border: 1px solid #D1D5DB; border-radius: 14px;
-        padding: 1rem 1.25rem; margin: 1rem 0;
-    }
-    .confirm-card {
-        background: #EFF6FF; border: 1px solid #BFDBFE; border-radius: 14px;
-        padding: 1rem 1.25rem; margin: 1rem 0;
-    }
-    .danger-card {
-        background: #FEF2F2; border: 1px solid #FCA5A5; border-radius: 14px;
-        padding: 1rem 1.25rem; margin: 1rem 0;
+        background: #1E2A2E; border-radius: 24px; padding: 1.5rem;
+        box-shadow: 0 8px 30px rgba(0,0,0,0.35); border: 1px solid #33454B;
     }
     .status-bar {
         display: flex; justify-content: space-between; font-size: 0.75rem;
         color: #9CA3AF; padding: 0 0.1rem 0.6rem 0.1rem; font-weight: 600;
     }
-    .balance-block { margin: 0.2rem 0 0.9rem 0; }
+    .topbar {
+        display: flex; align-items: center; justify-content: space-between;
+        margin-bottom: 1.1rem;
+    }
+    .avatar {
+        width: 38px; height: 38px; border-radius: 50%; background: #33454B;
+        display: flex; align-items: center; justify-content: center; font-size: 1.1rem;
+        border: 2px solid #34D399; flex-shrink: 0;
+    }
+    .brand-mark { font-size: 1.3rem; font-weight: 800; color: #F3F4F6; letter-spacing: 0.01em; }
+    .brand-mark .plus { color: #34D399; }
+    .topbar-icons { font-size: 1rem; color: #9CA3AF; letter-spacing: 0.55rem; }
+
+    .section-header {
+        display: flex; align-items: center; justify-content: space-between;
+        margin: 1.1rem 0 0.6rem 0;
+    }
+    .section-header .title {
+        display: flex; align-items: center; gap: 0.5rem;
+        font-weight: 700; font-size: 0.92rem; color: #F3F4F6;
+    }
+    .section-header .bar {
+        width: 4px; height: 15px; background: #34D399; border-radius: 2px; display: inline-block;
+    }
+    .section-header .right { font-size: 0.76rem; color: #6EE7B7; }
+
+    .intro-card, .balance-card {
+        background: #F9FAFB; border-radius: 14px; padding: 1rem 1.1rem; color: #1F2937;
+    }
+    .intro-card { display: flex; gap: 0.8rem; align-items: center; }
+    .intro-icon {
+        width: 42px; height: 42px; border-radius: 10px; flex-shrink: 0;
+        background: linear-gradient(135deg, #0C8B44, #34D399); color: white;
+        display: flex; align-items: center; justify-content: center; font-size: 1.25rem;
+    }
+    .intro-text b { display: block; margin-bottom: 0.15rem; }
+    .intro-text span { font-size: 0.8rem; color: #4B5563; }
+
     .balance-label {
-        font-size: 0.72rem; color: #9CA3AF; text-transform: uppercase;
-        letter-spacing: 0.04em; font-weight: 600;
+        font-size: 0.72rem; color: #6B7280; text-transform: uppercase;
+        letter-spacing: 0.04em; font-weight: 700;
     }
     .balance-amount { font-size: 1.7rem; font-weight: 700; color: #111827; margin-top: 0.1rem; }
+
+    .warning-card, .success-card, .cancel-card, .confirm-card, .danger-card {
+        border-radius: 14px; padding: 1rem 1.25rem; margin: 1rem 0;
+        color: #1F2937; /* these stay light "island" cards on the dark page, like the reference's white cards */
+    }
+    .warning-card { background: #FFF7ED; border: 1px solid #FDBA74; }
+    .success-card { background: #ECFDF5; border: 1px solid #6EE7B7; }
+    .cancel-card { background: #F3F4F6; border: 1px solid #D1D5DB; }
+    .confirm-card { background: #EFF6FF; border: 1px solid #BFDBFE; }
+    .danger-card { background: #FEF2F2; border: 1px solid #FCA5A5; }
+
     .gauge-track {
-        background: #E5E7EB; border-radius: 999px; height: 10px; overflow: hidden; margin-top: 0.4rem;
+        background: #3A4C52; border-radius: 999px; height: 10px; overflow: hidden; margin-top: 0.4rem;
     }
     .gauge-fill {
         height: 100%; border-radius: 999px;
         transition: width 0.4s ease, background-color 0.4s ease;
     }
-    .gauge-label { font-size: 0.78rem; color: #6B7280; margin-top: 0.3rem; }
+    .gauge-label { font-size: 0.78rem; color: #9CA3AF; margin-top: 0.3rem; }
     .pattern-tag {
         display: inline-block; background: #FEF3C7; color: #92400E; font-size: 0.75rem;
         font-weight: 600; padding: 0.3rem 0.65rem; border-radius: 999px; margin: 0.6rem 0 0.2rem 0;
     }
     .activity-row {
         display: flex; justify-content: space-between; align-items: center;
-        padding: 0.4rem 0; border-bottom: 1px solid #F3F4F6; font-size: 0.85rem;
+        padding: 0.5rem 0; border-bottom: 1px solid rgba(255,255,255,0.08); font-size: 0.85rem;
+        color: #E5E7EB;
     }
-    .activity-amount-out { color: #374151; font-weight: 600; }
-    .activity-amount-in { color: #10B981; font-weight: 600; }
+    .activity-amount-out { color: #E5E7EB; font-weight: 600; }
+    .activity-amount-in { color: #6EE7B7; font-weight: 600; }
+
+    .bottom-nav {
+        display: flex; justify-content: space-around; align-items: flex-end;
+        margin: 1.5rem -1.5rem -1.5rem -1.5rem; padding: 0.7rem 0.5rem 0.55rem 0.5rem;
+        border-top: 1px solid #33454B;
+    }
+    .bottom-nav .nav-item { display: flex; flex-direction: column; align-items: center; gap: 0.15rem; font-size: 0.62rem; color: #9CA3AF; }
+    .bottom-nav .nav-item.active { color: #34D399; }
+    .bottom-nav .nav-icon { font-size: 1.05rem; }
+    .bottom-nav .fab {
+        width: 44px; height: 44px; border-radius: 50%; background: #34D399; color: #0F1B1E;
+        display: flex; align-items: center; justify-content: center; font-size: 1.2rem;
+        margin-top: -20px; border: 4px solid #1E2A2E; box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+    }
+
     @keyframes fadeSlideIn {
         from { opacity: 0; transform: translateY(6px); }
         to { opacity: 1; transform: translateY(0); }
@@ -81,6 +130,15 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+
+def section_header(title: str, icon: str = "", right: str = "") -> str:
+    label = f"{icon} {title}" if icon else title
+    right_html = f'<span class="right">{right}</span>' if right else ""
+    return (
+        '<div class="section-header"><span class="title">'
+        f'<span class="bar"></span>{label}</span>{right_html}</div>'
+    )
 
 if "stage" not in st.session_state:
     st.session_state.stage = "idle"
@@ -93,6 +151,7 @@ if "stage" not in st.session_state:
     st.session_state.message = ""
     st.session_state.pattern_label = ""
     st.session_state.pattern_desc = ""
+    st.session_state.scorecard = None
 
 RECENT_ACTIVITY = {
     "aungnyilatt": [
@@ -134,7 +193,7 @@ PRESET_SCENARIOS = {
         },
         {
             "label": "🌙 Late-night transfer to a new account",
-            "transfer": {"recipient_id": "unknown_night_transfer", "amount": 1500, "hour": 2, "velocity_24h": 2},
+            "transfer": {"recipient_id": "unknown_night_transfer", "amount": 1520, "hour": 2, "velocity_24h": 2},
         },
         {
             "label": "📈 ฿3,500 to a 'guaranteed returns' contact",
@@ -142,6 +201,35 @@ PRESET_SCENARIOS = {
         },
     ],
 }
+
+
+GRADE_COLORS = {"A+": "#10B981", "B+": "#34D399", "C+": "#F59E0B", "D": "#FB923C", "F": "#EF4444"}
+
+
+def render_grade_badge(scorecard: dict) -> str:
+    color = GRADE_COLORS.get(scorecard["grade"], "#6B7280")
+    return (
+        f'<div style="display:flex; align-items:center; gap:0.5rem; margin:0.5rem 0;">'
+        f'<span style="background:{color}; color:white; font-weight:700; font-size:0.95rem; '
+        f'padding:0.2rem 0.7rem; border-radius:8px;">{scorecard["grade"]}</span>'
+        f'<span style="font-weight:600; color:#374151;">{scorecard["grade_label"]} '
+    )
+
+
+def render_scorecard_breakdown(scorecard: dict) -> str:
+    color = GRADE_COLORS.get(scorecard["grade"], "#6B7280")
+    rows = ""
+    for label, pts, max_pts in scorecard["breakdown"]:
+        pct = (pts / max_pts * 100) if max_pts else 0
+        rows += (
+            '<div style="margin:0.5rem 0;">'
+            '<div style="display:flex; justify-content:space-between; font-size:0.82rem;">'
+            f'<span>{label}</span><span style="color:#9CA3AF;">{pts}/{max_pts} pts</span></div>'
+            f'<div class="gauge-track" style="height:6px;">'
+            f'<div class="gauge-fill" style="width:{pct:.0f}%; background:{color};"></div></div>'
+            "</div>"
+        )
+    return rows
 
 
 def render_gauge(proba: float) -> str:
@@ -175,6 +263,7 @@ def start_transfer(transfer: dict) -> None:
     features = build_features(persona, transfer)
     risk_level, proba, factors = predict_risk(features)
     pattern_label, pattern_desc = classify_scam_pattern(transfer["recipient_id"], features)
+    scorecard = compute_risk_scorecard(features)
 
     st.session_state.transfer = transfer
     st.session_state.risk_level = risk_level
@@ -182,6 +271,7 @@ def start_transfer(transfer: dict) -> None:
     st.session_state.factors = factors
     st.session_state.pattern_label = pattern_label
     st.session_state.pattern_desc = pattern_desc
+    st.session_state.scorecard = scorecard
 
     if risk_level == "low":
         # Even a known recipient / normal amount still gets a plain confirm
@@ -205,6 +295,10 @@ def switch_persona(key: str) -> None:
     reset()
 
 
+def recipient_display_name(persona: dict, recipient_id: str) -> str:
+    return persona["known_recipients"].get(recipient_id, recipient_id)
+
+
 def complete_transfer(next_stage: str) -> None:
     """Actually debit the balance and log it to recent activity — reaching
     this point means the money left the account, whether that was a clean
@@ -215,7 +309,7 @@ def complete_transfer(next_stage: str) -> None:
 
     st.session_state.balances[key] -= transfer["amount"]
 
-    recipient_name = persona["known_recipients"].get(transfer["recipient_id"], transfer["recipient_id"])
+    recipient_name = recipient_display_name(persona, transfer["recipient_id"])
     icon = "⚠️" if next_stage == "proceeded" else "💸"
     st.session_state.activity[key].insert(0, {
         "icon": icon,
@@ -230,16 +324,31 @@ def complete_transfer(next_stage: str) -> None:
 active_persona = PERSONAS[st.session_state.active_persona_key]
 
 st.markdown('<div class="phone-card">', unsafe_allow_html=True)
-st.markdown('<div class="status-bar"><span>9:41</span><span>🔋 K PLUS</span></div>', unsafe_allow_html=True)
-st.markdown('<div class="kplus-header">🛡️ Pause &amp; Protect — K PLUS Concept</div>', unsafe_allow_html=True)
-
-current_balance = st.session_state.balances[st.session_state.active_persona_key]
 st.markdown(
-    '<div class="balance-block"><div class="balance-label">Available Balance</div>'
-    f'<div class="balance-amount">฿{current_balance:,.2f}</div></div>',
+    '<div class="topbar">'
+    f'<div class="avatar">{"👨" if active_persona["name"] == "Aung" else "🌱"}</div>'
+    '<div class="brand-mark">K<span class="plus">+</span></div>'
+    '<div class="topbar-icons">🔔&nbsp;&#9211;</div>'
+    "</div>",
     unsafe_allow_html=True,
 )
 
+st.markdown(section_header("Pause & Protect", icon="🛡️"), unsafe_allow_html=True)
+st.markdown(
+    '<div class="intro-card"><div class="intro-icon">🛡️</div>'
+    '<div class="intro-text"><b>A real-time scam warning</b>'
+    "<span>Checks every transfer for risk before the money leaves the account.</span></div></div>",
+    unsafe_allow_html=True,
+)
+
+st.markdown(section_header("Quick Balance", right="Settings &gt;"), unsafe_allow_html=True)
+current_balance = st.session_state.balances[st.session_state.active_persona_key]
+st.markdown(
+    '<div class="balance-card"><div class="balance-label">Available Balance</div>'
+    f'<div class="balance-amount">฿{current_balance:,.2f}</div></div>',
+    unsafe_allow_html=True,
+)
+st.space("xxsmall")
 persona_cols = st.columns(2)
 with persona_cols[0]:
     if st.button(
@@ -256,7 +365,7 @@ with persona_cols[1]:
         switch_persona("add")
         st.rerun()
 
-st.markdown(f"### 👋 Meet {active_persona['name']}")
+st.markdown(section_header(f"Meet {active_persona['name']}", icon="👋"), unsafe_allow_html=True)
 st.write(
     f"{active_persona['role']}. Usually transfers around "
     f"฿{active_persona['avg_amount']:,.0f} at a time, mostly to "
@@ -282,7 +391,7 @@ with st.expander(f"📜 {active_persona['name']}'s recent activity"):
         )
 
 if st.session_state.stage == "idle":
-    st.markdown("#### Try a transfer scenario")
+    st.markdown(section_header("Try a Transfer", icon="💸"), unsafe_allow_html=True)
     for scenario in PRESET_SCENARIOS[st.session_state.active_persona_key]:
         if st.button(scenario["label"], use_container_width=True):
             start_transfer(scenario["transfer"])
@@ -312,8 +421,10 @@ if st.session_state.stage == "idle":
         }
         live_features = build_features(active_persona, live_transfer)
         _, live_proba, live_factors = predict_risk(live_features)
+        live_scorecard = compute_risk_scorecard(live_features)
 
         st.markdown(render_gauge(live_proba), unsafe_allow_html=True)
+        st.markdown(render_grade_badge(live_scorecard), unsafe_allow_html=True)
         over_balance = live_transfer["amount"] > current_balance
         if over_balance:
             st.caption(f"🚫 Not enough balance — only ฿{current_balance:,.2f} available.")
@@ -342,9 +453,10 @@ elif st.session_state.stage == "insufficient_funds":
 elif st.session_state.stage == "confirm":
     t = st.session_state.transfer
     st.markdown(render_gauge(st.session_state.proba), unsafe_allow_html=True)
+    st.markdown(render_grade_badge(st.session_state.scorecard), unsafe_allow_html=True)
     st.markdown(
         '<div class="confirm-card">✋ <b>Confirm this transfer</b><br><br>'
-        f'Send <b>฿{t["amount"]:,.0f}</b> to <b>{t["recipient_id"]}</b>?<br>'
+        f'Send <b>฿{t["amount"]:,.0f}</b> to <b>{recipient_display_name(active_persona, t["recipient_id"])}</b>?<br>'
         '<span style="color:#6B7280; font-size:0.85rem;">No red flags found — but double-check the '
         "amount before sending. Even known accounts are worth a second look.</span></div>",
         unsafe_allow_html=True,
@@ -362,8 +474,9 @@ elif st.session_state.stage == "confirm":
 elif st.session_state.stage == "sent":
     t = st.session_state.transfer
     st.markdown(render_gauge(st.session_state.proba), unsafe_allow_html=True)
+    st.markdown(render_grade_badge(st.session_state.scorecard), unsafe_allow_html=True)
     st.markdown(
-        f'<div class="success-card">✅ <b>Sent ฿{t["amount"]:,.0f}</b> to {t["recipient_id"]}. '
+        f'<div class="success-card">✅ <b>Sent ฿{t["amount"]:,.0f}</b> to {recipient_display_name(active_persona, t["recipient_id"])}. '
         "No red flags — straight through, like today's K PLUS.</div>",
         unsafe_allow_html=True,
     )
@@ -371,6 +484,7 @@ elif st.session_state.stage == "sent":
 
 elif st.session_state.stage == "warning":
     st.markdown(render_gauge(st.session_state.proba), unsafe_allow_html=True)
+    st.markdown(render_grade_badge(st.session_state.scorecard), unsafe_allow_html=True)
     st.markdown(
         f'<span class="pattern-tag">🔎 {st.session_state.pattern_label}</span>',
         unsafe_allow_html=True,
@@ -385,8 +499,8 @@ elif st.session_state.stage == "warning":
     )
     with st.expander("Why is this flagged?"):
         st.write(st.session_state.pattern_desc)
-        for factor in st.session_state.factors:
-            st.write(f"- {factor}")
+        st.caption("Risk scorecard — a transparent point breakdown, weighted from what the model itself learned matters most:")
+        st.markdown(render_scorecard_breakdown(st.session_state.scorecard), unsafe_allow_html=True)
 
     col1, col2 = st.columns(2)
     with col1:
@@ -411,10 +525,21 @@ elif st.session_state.stage == "proceeded":
     card_class = "danger-card" if is_high else "warning-card"
     icon = "🚨" if is_high else "⚠️"
     st.markdown(
-        f'<div class="{card_class}">{icon} Sent ฿{t["amount"]:,.0f} to {t["recipient_id"]} anyway. '
+        f'<div class="{card_class}">{icon} Sent ฿{t["amount"]:,.0f} to {recipient_display_name(active_persona, t["recipient_id"])} anyway. '
         "(In the real product, this creates a flagged record KBTG can use for faster fraud response.)</div>",
         unsafe_allow_html=True,
     )
     st.button("Try another scenario", on_click=reset, use_container_width=True)
+
+st.markdown(
+    '<div class="bottom-nav">'
+    '<div class="nav-item active"><span class="nav-icon">🏠</span>Home</div>'
+    '<div class="nav-item"><span class="nav-icon">🛒</span>Market</div>'
+    '<div class="fab">🛡️</div>'
+    '<div class="nav-item"><span class="nav-icon">▦</span>Scan</div>'
+    '<div class="nav-item"><span class="nav-icon">⋯</span>More</div>'
+    "</div>",
+    unsafe_allow_html=True,
+)
 
 st.markdown("</div>", unsafe_allow_html=True)
